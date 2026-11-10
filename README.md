@@ -56,16 +56,30 @@ hospital_readmission_ml/
 │   ├── download_data.py              # downloads the dataset (reproducible)
 │   ├── run_notebook.py               # executes a notebook headlessly, reports failures
 │   ├── check_notebook.py             # verifies a notebook: cells, figures, errors
-│   ├── 01_patterns.py / 02_groupby_demo.py / timing_test.py
-│   └── build_notebook_p*.py, build_nb0*_p*.py  # the scripts that generated the notebooks
+│   ├── test_app.py                   # drives the Streamlit app without a browser
+│   ├── 01_patterns.py / 02_groupby_demo.py
+│   ├── build_notebook_p*.py          # the scripts that generated the notebooks
+│   ├── build_nb02_p*.py / build_nb03_p*.py
+│   └── diagnostics/                  # measurements taken while debugging
+│       ├── timing_test.py            # how long one LightGBM fit really takes
+│       ├── timing_test_small.py
+│       └── debug_threshold.py        # reproduced the threshold-selection bug
 ├── app/
 │   └── app.py                        # Part 5: Streamlit app
-├── models/                           # trained models (joblib) written by the notebooks
+├── models/                           # trained models (joblib), so the app runs as cloned
 ├── docs/
 │   └── notebook_01_explained.md      # plain-English walkthrough of notebook 01
 ├── report.md                         # Part 6: approach, results, challenges, recommendations
 └── requirements.txt
 ```
+
+> **Notes on what is committed:** the raw data CSVs (~19 MB) are committed
+> **deliberately**, so a reviewer can run the notebooks immediately after cloning
+> without re-downloading (`src/download_data.py` recreates them from UCI anyway).
+> The **trained models are not committed** — the Random Forest artifact alone is
+> 727 MB, past GitHub's file limit, and models are fully recreated by notebooks 02
+> and 03. Run notebook 02 once (~15 minutes) to produce `models/lightgbm.joblib`
+> for the Streamlit app.
 
 ---
 
