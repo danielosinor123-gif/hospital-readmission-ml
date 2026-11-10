@@ -116,6 +116,7 @@ probability of readmission within 30 days, a risk band, and validates every inpu
 
 ```bash
 python src/check_notebook.py    # prints cells, figures and error count
+python src/test_app.py          # drives the Streamlit app's code without a browser
 ```
 
 ---
