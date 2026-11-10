@@ -1,0 +1,15 @@
+{
+ "model": "LightGBM (tuned on full training set)",
+ "chosen_threshold": 0.55,
+ "test_roc_auc": 0.6687,
+ "test_pr_auc": 0.226,
+ "test_recall": 0.4399,
+ "test_precision": 0.2098,
+ "test_f1": 0.2841,
+ "confusion_matrix": {
+  "tn": 13950,
+  "fp": 3820,
+  "fn": 1291,
+  "tp": 1014
+ }
+}

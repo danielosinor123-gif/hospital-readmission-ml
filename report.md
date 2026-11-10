@@ -61,8 +61,13 @@ and the model is only allowed to use information that exists at discharge.
   one full fit costs ~2.5 minutes on this machine).
 - Tuning: `RandomizedSearchCV` (6 sampled combinations) scored by average
   precision with **`GroupKFold`** — folds grouped by patient, the rigorous version.
-- **Threshold chosen by rule, not by feel:** the lowest threshold reaching 75%
-  recall, with the trade-off table published in full.
+- **Threshold chosen by policy, not by feel.** Two candidates were computed from
+  the full trade-off table (published in notebook 03): an **F1-optimal**
+  threshold (~31% of stays alerted, ~half of readmissions caught) and a
+  **recall-first** threshold (75% recall, but ~68% of stays alerted at ~14%
+  precision — unusable in a ward). The F1-optimal rule was deployed and the
+  alternative is reported, because that trade is a hospital policy decision, not
+  a modelling one.
 
 ### Part 4 — Explainability and healthcare considerations (`notebooks/03`)
 
@@ -100,21 +105,49 @@ threshold, not the model, is what fails. Comparing models at a fixed threshold i
 unfair; notebook 03 therefore re-compares them at a *matched 50% recall*
 operating point, which is the defensible way to choose.
 
-### Final model (tuned, chosen threshold)
+**Matched-recall comparison (50% recall, notebook 03):**
 
-| Metric | Value |
-|---|---|
-| Test ROC-AUC | `[TBD]` |
-| Test PR-AUC | `[TBD]` |
-| Recall (chosen threshold) | `[TBD]` |
-| Precision (chosen threshold) | `[TBD]` |
-| F1 | `[TBD]` |
-| Confusion matrix (TN/FP/FN/TP) | `[TBD]` |
+| Model | Precision @ 50% recall | Threshold needed |
+|---|---|---|
+| Logistic Regression | 0.115 | 0.03 |
+| Random Forest | 0.115 | ~0.00 |
+| LightGBM (untuned) | 0.115 | 0.01 |
 
-**How to read it:** at the chosen threshold we flag roughly `[TBD]` of every 100
-stays; of those alerts, `[TBD]`% genuinely return, and we catch `[TBD]`% of all
-patients who return. For comparison, a hospital doing nothing has 88.7% accuracy
-and **0%** recall.
+At 50% recall the three models are **statistically indistinguishable** — the
+honest conclusion is that no model here separates readmission risk well at that
+operating point. LightGBM was selected on its ranking quality (best PR-AUC,
+0.229 vs 0.219 / 0.215) and because SHAP values for tree models are exact — not
+because of a large accuracy gap.
+
+### Final model (LightGBM, tuned, deployed threshold 0.55)
+
+| Metric | Value | Plain meaning |
+|---|---|---|
+| Test ROC-AUC | 0.669 | ranking quality |
+| Test PR-AUC | 0.226 | ranking quality under imbalance (base rate 0.113) |
+| Recall | 44.0% | of the patients who returned, we catch 44% |
+| Precision | 21.0% | of our alerts, 21% really return |
+| F1 | 0.284 | balance of the two |
+| Confusion matrix | TN 13,950 · FP 3,820 · FN 1,291 · TP 1,014 | 24 alerts per 100 stays |
+
+**The two published threshold policies (notebook 03 §4):**
+
+| Policy | Threshold | Recall | Precision | Alerts per 100 stays |
+|---|---|---|---|---|
+| **Deployed** (F1-optimal) | 0.55 | 44.0% | 21.0% | 24 |
+| Recall-first (75% target) | 0.40 | 81.6% | 14.4% | 65 |
+
+The deployed rule alerts about a quarter of discharges; the recall-first rule
+catures four in five patients but would alert two thirds of all discharges —
+not a staffable workflow. Which error matters more is a hospital policy question,
+so both are published rather than decided silently in the code.
+
+**How to read it:** at the deployed threshold we flag **24 of every 100 stays**;
+of those alerts, **21%** genuinely return, and we catch **44%** of all patients who
+return. For comparison, a hospital doing nothing has 88.7% accuracy and **0%**
+recall — and, more usefully, the model's top-10 risk band contains the patients
+the Part 1 analysis already identified (frequent prior stays, fragile discharge
+destinations).
 
 **Honest note on the level of performance.** ROC-AUC ~0.66 and PR-AUC ~0.23
 against a 11.3% base rate is in line with published work on this dataset. The
@@ -122,13 +155,68 @@ ceiling is set by the data: readmission is driven strongly by housing, income,
 transport and support at home — none of which these insurance records contain. A
 stronger score would require stronger inputs, not a cleverer model.
 
+### Tuning outcome (honest)
+
+`RandomizedSearchCV` (3 sampled configurations × 3 patient-grouped folds) found
+its best configuration at CV average-precision **0.2115**. Re-trained on the full
+80,039 training stays, it scored test PR-AUC **0.2260** versus **0.2287** for the
+untuned model — i.e. **tuning did not improve the test score** (ROC-AUC improved
+0.663 → 0.669). The difference is within noise, and we say so rather than claim a
+win. The search was deliberately small: a measured fit cost of ~60–100s on this
+machine allowed only 9 fits in one session.
+
 ### SHAP — what drives the predictions
 
-`[TBD: top features from the SHAP summary, with direction]`
+Mean |SHAP| on 2,000 test stays (notebook 03 §5):
+
+| Rank | Feature | Mean \|SHAP\| | Reading |
+|---|---|---|---|
+| 1 | `number_inpatient` | 0.231 | prior inpatient stays — the dominant driver |
+| 2 | `discharge_disposition_id_1` (home) | 0.168 | going home is the safest destination |
+| 3 | `prior_visits_total` | 0.093 | total health-system use in the previous year |
+| 4 | `number_diagnoses` | 0.060 | clinical complexity |
+| 5 | `payer_code_Missing` | 0.051 | missing insurance code — an administrative artefact |
+| 6 | `age_mid` | 0.043 | age |
+| 7 | `diag_1_grp_circulatory` | 0.041 | primary diagnosis |
+| 8 | `num_medications` | 0.039 | treatment intensity |
+| 9 | `discharge_disposition_id_22` (rehab) | 0.037 | going to rehab raises risk |
+| 10 | `diabetesMed` | 0.034 | on diabetes medication |
+
+**This is the coherence check that matters:** the two strongest drivers are exactly
+the two patterns found in Part 1 by counting — prior inpatient visits (8.6% →
+45.9%) and discharge destination (9.3% → 36.7%). The model did not discover
+something alien; it weighted what the data analysis had already proven.
+
+One caveat worth flagging: `payer_code_Missing` ranking 5th is an
+**administrative artefact**, not clinical knowledge. A reviewer should ask whether
+a model should be allowed to lean on an insurance-code gap at all.
+
+Per-patient SHAP waterfalls (notebook 03 §5.2) explain a correctly caught
+readmission (model risk 64%) and a missed one (52%) — the kind of single-patient
+explanation a clinical reviewer would need before trusting an alert.
 
 ### Fairness
 
-`[TBD: recall by race and gender, and the judgement call]`
+Test-set recall by group at the deployed threshold:
+
+| Group | Stays | Readmit rate | Recall | Precision |
+|---|---|---|---|---|
+| Caucasian | 15,011 | 11.9% | 44.0% | 21.5% |
+| AfricanAmerican | 3,814 | 10.9% | **47.5%** | 20.4% |
+| Hispanic | 387 | 7.8% | 33.3% | 12.2% |
+| Asian | 134 | 9.7% | 53.8% | 41.2% |
+| Other | 313 | 9.6% | 20.0% | 10.2% |
+| Race missing | 416 | 9.1% | 28.9% | 17.5% |
+| Female | 10,657 | 11.1% | 44.4% | 19.7% |
+| Male | 9,417 | 11.9% | 43.6% | 22.5% |
+
+**Judgement:** the two large groups (Caucasian, AfricanAmerican) are served
+essentially equally (44.0% vs 47.5% recall). The apparent spread on the small
+groups is driven by sample size — 134 to 416 stays, where a handful of patients
+moves the rate several points — so we report the counts next to every figure and
+do **not** claim a disparity or its absence. A serious fairness audit would need
+a larger sample per group, plus socio-economic variables this dataset lacks
+entirely. Gender shows no meaningful gap.
 
 ---
 
@@ -151,9 +239,10 @@ Three things, in order of difficulty:
 
 ## 5. Why this final model?
 
-LightGBM, tuned, at a threshold chosen for recall — because:
+LightGBM, tuned, at a threshold chosen for recall–precision balance — because:
 
-- It had the strongest PR-AUC of the three (the metric that respects imbalance).
+- It had the strongest PR-AUC of the three (0.229 vs 0.219 / 0.215) — the metric
+  that respects an 11% positive rate.
 - Trees handle the non-linear, mixed-type features (prior visits, dose changes)
   without manual transforms.
 - It works with **missing and categorical** data natively, which suits messy
@@ -161,8 +250,11 @@ LightGBM, tuned, at a threshold chosen for recall — because:
 - It explains itself: SHAP values for tree models are exact, so the fairness and
   per-patient explanations are trustworthy, not approximations.
 
-The tuned configuration beat the untuned one on the test PR-AUC by
-`[TBD]` points — a modest gain, honestly reported.
+Honest note on margin: at a matched 50% recall all three models delivered the same
+precision (0.115), and tuning changed test PR-AUC by less than the noise. The
+choice of LightGBM rests on ranking quality and explainability, **not** on a large
+performance gap — and a genuine deployment decision would be made on a local
+validation set, not on this comparison.
 
 ## 6. What would improve it with more time?
 

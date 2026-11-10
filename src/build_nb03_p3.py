@@ -82,8 +82,9 @@ for label, idx in [("a correctly caught readmission", tp_idx),
                            base_values=explainer.expected_value,
                            data=x_one.iloc[0], feature_names=list(X_test.columns)))
     fig = shap.plots.waterfall(st, max_display=12, show=False)
-    fig.set_size_inches(9, 6)
-    plt.title(f"Figure 5 — {label}", fontsize=12)
+    if hasattr(fig, "set_size_inches"):     # shap returns different objects by version
+        fig.set_size_inches(9, 6)
+    plt.title(f"Figure 5 - {label}", fontsize=12)
     plt.tight_layout()
     plt.show()
 

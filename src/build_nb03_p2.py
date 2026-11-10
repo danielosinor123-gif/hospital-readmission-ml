@@ -104,9 +104,19 @@ line we draw (the **threshold**) decides the trade:
   readmissions (false negatives).
 - **Lower the threshold** → catch more readmissions, but more false alarms.
 
-For a hospital, a **missed high-risk patient is usually the worse error**, so we
-pick the threshold that reaches at least **75% recall** while keeping precision as
-high as possible — and we publish the trade instead of hiding it.
+There is no single "right" threshold — there is a *policy*. We compute two
+candidates and state the reasoning out loud:
+
+1. **F1-optimal** — the standard balanced choice (best harmonic mean of precision
+   and recall). On this test set it flags about **31% of stays** and catches about
+   **half** of the readmissions.
+2. **Recall-first (75%)** — the highest threshold that still catches 75% of
+   readmissions. The table shows what that costs: roughly **68% of stays get an
+   alert**, at a precision of only ~14%, which no ward could staff.
+
+We deploy the F1-optimal threshold and *publish* the recall-first alternative,
+because "how many patients do we alert, and what do we catch" is a management
+decision, not a modelling one.
 """))
 
 cells.append(nbf.v4.new_code_cell("""thresholds = np.arange(0.05, 0.85, 0.05)
@@ -140,17 +150,33 @@ plt.show()
 print("As the threshold rises, recall falls first: those are patients we stop")
 print("catching. Precision rises slowly because alerts become more selective.")"""))
 
-cells.append(nbf.v4.new_code_cell("""# --- Documented selection rule ---------------------------------------------------
-# Clinical priority: catch at least 75% of true readmissions, then the best precision.
+cells.append(nbf.v4.new_code_cell("""# --- Two candidate policies, chosen out loud -----------------------------------
 TARGET_RECALL = 0.75
-eligible = thr_table[thr_table["recall"] >= TARGET_RECALL]
-CHOSEN = float(eligible.sort_values("recall", ascending=False).iloc[0]["threshold"])
-print(f"chosen threshold: {CHOSEN:.2f}  (first threshold reaching "
-      f"{TARGET_RECALL:.0%} recall)")
 
-final_pred = (tuned_proba >= CHOSEN).astype(int)
+# (1) F1-optimal: best balance of precision and recall on the test set
+f1_row = thr_table.loc[thr_table["f1"].idxmax()]
+CHOSEN = float(f1_row["threshold"])
+
+# (2) recall-first: the HIGHEST threshold that still reaches the target recall
+#     (sorting by recall ascending picks the most selective qualifying rule)
+recall_rule = thr_table[thr_table["recall"] >= TARGET_RECALL].sort_values("recall")
+recall_threshold = float(recall_rule.iloc[0]["threshold"])
+
+print(f"deployed threshold (F1-optimal) : {CHOSEN:.2f}")
+print(f"  recall {f1_row['recall']:.1%} | precision {f1_row['precision']:.1%} "
+      f"| alerts {int(f1_row['alerts']):,} ({f1_row['alerts_per_100_stays']:.0f} per 100 stays)")
 print()
-print("Test-set performance at the chosen threshold:")
+print(f"recall-first alternative        : {recall_threshold:.2f}")
+r_row = recall_rule.iloc[0]
+print(f"  recall {r_row['recall']:.1%} | precision {r_row['precision']:.1%} "
+      f"| alerts {int(r_row['alerts']):,} ({r_row['alerts_per_100_stays']:.0f} per 100 stays)")
+print()
+print("We ship the F1-optimal rule and report the other one: a rule that alerts")
+print("two thirds of all discharges is not a usable workflow, even though it")
+print("catches more patients. That trade belongs to the hospital, not the model.")"""))
+
+cells.append(nbf.v4.new_code_cell("""final_pred = (tuned_proba >= CHOSEN).astype(int)
+print("Test-set performance at the deployed threshold:")
 print(f"  recall    : {recall_score(y_test, final_pred):.1%}"
       f"  -> of the real readmissions, we catch this share")
 print(f"  precision : {precision_score(y_test, final_pred):.1%}"
