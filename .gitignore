@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Data: recreated by `python src/download_data.py` and the notebooks,
+# so they stay out of git (the raw CSV alone is 19 MB)
+data/raw/*.zip
+data/processed/*.csv
+
+# Trained models are recreated by running notebook 02/03
+models/*.joblib
+
+# Exports
+*.html
+docs/*.html
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
