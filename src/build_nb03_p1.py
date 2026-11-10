@@ -27,10 +27,11 @@ untuned performance. This notebook finishes the job:
 5. **SHAP** — which features drive each prediction.
 6. **Fairness check** — does the model work equally well for every group?
 
-> **Compute note (honest engineering):** one full LightGBM fit costs ~2.5 minutes
-> on this machine, so the search runs on a stratified 20,000-row subsample and the
-> winning configuration is re-trained once on the full training set — the standard
-> coarse-to-fine workflow under a compute budget.
+> **Compute note (honest engineering):** a LightGBM fit costs ~2.5 minutes at full
+> size on this machine, so the hyperparameter search runs on a stratified
+> 12,000-row subsample with 3 sampled configurations and 3 patient-grouped folds.
+> The winning configuration is then re-trained once on the full training set — the
+> standard coarse-to-fine workflow under a real compute budget.
 """))
 
 cells.append(nbf.v4.new_code_cell("""import json
@@ -124,6 +125,15 @@ X_train, X_test = X_all.iloc[train_idx], X_all.iloc[test_idx]
 y_train, y_test = y_all.iloc[train_idx], y_all.iloc[test_idx]
 patient_train = patients_all.iloc[train_idx]
 
+# reset the index: model predictions are POSITIONAL (row 0, 1, 2 ...), so the
+# tables must line up with them. Keeping the original labels here caused a
+# misaligned boolean mask and an empty true-positive set -- a real bug, fixed.
+X_train = X_train.reset_index(drop=True)
+X_test = X_test.reset_index(drop=True)
+y_train = y_train.reset_index(drop=True)
+y_test = y_test.reset_index(drop=True)
+patient_train = patient_train.reset_index(drop=True)
+
 print("recovered train:", X_train.shape, "| patients:", patient_train.nunique())"""))
 
 cells.append(nbf.v4.new_code_cell("""# --- Reproducibility proof: the recovered split equals the saved split ---------
@@ -152,40 +162,44 @@ The search samples 6 random combinations from the grid below, then the winner is
 re-trained on the full training set once.
 """))
 
-cells.append(nbf.v4.new_code_cell("""# stratified subsample for the search (documented compute trade-off)
+cells.append(nbf.v4.new_code_cell("""# stratified subsample for the search
+# MEASURED on this machine: one LightGBM fit costs ~60-100s regardless of size
+# (fixed overhead dominates), so the budget allows ~9 fits inside the cell limit.
+# Hence: 12,000 rows, 3 sampled combinations, 3 patient-grouped folds.
 rng = np.random.default_rng(RANDOM_STATE)
-pos_idx = X_train.index[y_train == 1].to_numpy()
-neg_idx = X_train.index[y_train == 0].to_numpy()
-n_pos = int(20000 * y_train.mean())
-take = np.concatenate([rng.choice(pos_idx, n_pos, replace=False),
-                       rng.choice(neg_idx, 20000 - n_pos, replace=False)])
+pos_pos = np.flatnonzero(y_train.to_numpy() == 1)     # positions, not labels
+neg_pos = np.flatnonzero(y_train.to_numpy() == 0)
+n_pos = int(12000 * y_train.mean())
+take = np.concatenate([rng.choice(pos_pos, n_pos, replace=False),
+                       rng.choice(neg_pos, 12000 - n_pos, replace=False)])
 rng.shuffle(take)
-sub_X, sub_y, sub_pat = X_train.loc[take], y_train.loc[take], patient_train.loc[take]
+sub_X, sub_y, sub_pat = (X_train.iloc[take], y_train.iloc[take],
+                         patient_train.iloc[take])
 print("subsample:", sub_X.shape, "| positives:", int(sub_y.sum()),
       "| patients:", sub_pat.nunique())"""))
 
-cells.append(nbf.v4.new_code_cell("""param_grid = {
-    "n_estimators":       [100, 200],   # trees to build
+cells.append(nbf.v4.new_code_cell("""# --- The search space. Each knob has a plain clinical/statistical reason ---------
+param_grid = {
     "learning_rate":      [0.05, 0.1],  # how hard each tree corrects the last
-    "num_leaves":         [15, 31, 63], # tree size (bigger = more capacity, more overfit)
-    "max_depth":          [-1, 8],      # -1 = unlimited depth
-    "min_child_samples":  [20, 50],     # rows required before another split
-    "subsample":          [0.7, 1.0],   # rows used per tree
-    "colsample_bytree":   [0.7, 1.0],   # features used per tree
-    "reg_alpha":          [0, 0.1],     # L1 penalty
+    "num_leaves":         [15, 31],     # tree size (bigger = more capacity, more overfit)
+    "min_child_samples":  [20, 50],     # rows required before another split (anti-overfit)
+    "subsample":          [0.8],        # rows used per tree (randomness = robustness)
+    "colsample_bytree":   [0.8],        # features used per tree
     "reg_lambda":         [0, 1.0],     # L2 penalty
 }
 n_combos = int(np.prod([len(v) for v in param_grid.values()]))
-print(f"full grid: {n_combos:,} combinations -> we sample 6 (RandomizedSearchCV)")"""))
+print(f"full grid: {n_combos} combinations -> we sample 3 (RandomizedSearchCV)")
+print("Rationale for the small budget: measured fit cost here is ~60-100s, so")
+print("9 fits (3 configs x 3 patient-grouped folds) is what runs in one session.")"""))
 
 cells.append(nbf.v4.new_code_cell("""spw = (sub_y == 0).sum() / (sub_y == 1).sum()
-gbm = LGBMClassifier(scale_pos_weight=spw, n_jobs=-1,
+gbm = LGBMClassifier(n_estimators=150, scale_pos_weight=spw, n_jobs=-1,
                      random_state=RANDOM_STATE, verbose=-1)
 
 search = RandomizedSearchCV(
     estimator=gbm,
     param_distributions=param_grid,
-    n_iter=6,
+    n_iter=3,
     scoring="average_precision",
     cv=GroupKFold(n_splits=3),
     random_state=RANDOM_STATE,

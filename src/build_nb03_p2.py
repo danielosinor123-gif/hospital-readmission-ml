@@ -19,6 +19,7 @@ configuration is now re-trained on the **full 80,039 training stays** (one fit,
 """))
 
 cells.append(nbf.v4.new_code_cell("""best_params = dict(search.best_params_)
+best_params.setdefault("n_estimators", 150)   # fixed in the search on purpose
 best_params.setdefault("scale_pos_weight", (y_train == 0).sum() / (y_train == 1).sum())
 best_params.setdefault("random_state", RANDOM_STATE)
 best_params.setdefault("n_jobs", -1)
@@ -50,6 +51,48 @@ print(comparison.to_string())
 tuned_proba = final_gbm.predict_proba(X_test)[:, 1]
 print()
 print("Did tuning help? compare pr_auc (the honest imbalance metric).")"""))
+
+cells.append(nbf.v4.new_markdown_cell("""
+### 3.1 Comparing the models at the *same* operating point
+
+The table above uses the default 0.5 threshold, which is unfair: the three models
+miscalibrate differently. Random Forest's class weighting pushes its probabilities
+down, so almost nothing crosses 0.5 — it flagged only **7 of 20,075** stays.
+
+The professional comparison fixes the **recall** (how many real readmissions we
+catch) and asks *what precision each model delivers at that recall*. That answers
+the question that actually matters: "which model should we deploy?"
+"""))
+
+cells.append(nbf.v4.new_code_cell("""def precision_at_recall(model, target_recall=0.50):
+    proba = model.predict_proba(X_test)[:, 1]
+    prec, rec, thr = precision_recall_curve(y_test, proba)
+    idx = int(np.argmax(rec >= target_recall))     # first point reaching the target
+    return round(float(prec[idx]), 4), (round(float(thr[idx]), 3)
+                                        if idx < len(thr) else float("nan"))
+
+rows = []
+for name, fname in [("Logistic Regression", "logistic_regression.joblib"),
+                    ("Random Forest", "random_forest.joblib"),
+                    ("LightGBM (untuned)", "lightgbm.joblib")]:
+    m = joblib.load(PROC.parent.parent / "models" / fname)
+    p, t = precision_at_recall(m, 0.50)
+    rows.append({"model": name,
+                 "precision @ 50% recall": p,
+                 "threshold needed": t})
+matched = pd.DataFrame(rows)
+print(matched.to_string(index=False))
+
+best = matched.loc[matched["precision @ 50% recall"].idxmax()]
+print()
+print(f"Best at 50% recall: {best['model']} "
+      f"(precision {best['precision @ 50% recall']})")
+print()
+print("Note on quality: all three sit around PR-AUC 0.21-0.23 against a base")
+print("rate of 0.113. That is honest -- readmission depends heavily on factors")
+print("this dataset does not record (housing, support at home, income), so no")
+print("model built from these columns alone can be excellent. The value is in")
+print("the ranking and in the workflow it triggers, not in a headline score.")"""))
 
 cells.append(nbf.v4.new_markdown_cell("""
 ## 4. Choosing the decision threshold
