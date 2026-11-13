@@ -133,6 +133,30 @@ python src/check_notebook.py    # prints cells, figures and error count
 python src/test_app.py          # drives the Streamlit app's code without a browser
 ```
 
+### 6. Deploy to Streamlit Cloud
+
+1. Push this repository to GitHub (it is already public at
+   `https://github.com/danielosinor123-gif/hospital-readmission-ml`).
+2. On [share.streamlit.org](https://share.streamlit.org) create a new app:
+   repository = this one, branch = `main`, main file = `app/app.py`.
+3. The app has exactly four file dependencies, all committed to the repo, so no
+   build step is needed:
+
+   | File | Why |
+   |---|---|
+   | `models/final_model.joblib` | the tuned model (0.3 MB) |
+   | `data/processed/final_model_summary.json` | the deployed decision threshold |
+   | `data/processed/feature_columns.json` | the exact feature list and order |
+   | `data/processed/feature_defaults.json` | default value per feature (7 KB) |
+
+4. `feature_defaults.json` is produced by `python src/make_feature_defaults.py`
+   because the 35 MB `X_train.csv` is deliberately **not** committed. The JSON
+   gives the app the training-data mode of all 222 features without shipping the
+   data — this is what made the cloud deployment work after a clean clone.
+5. `models/random_forest.joblib` (728 MB) is excluded from git: it exceeds
+   GitHub's 100 MB per-file limit. Recreate it locally by re-running notebook 02
+   if you need to compare models again.
+
 ---
 
 ## Key decisions (the short version)
