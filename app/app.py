@@ -3,11 +3,15 @@ Streamlit app: "Will this patient be readmitted within 30 days?"
 
 WHAT THIS FILE DOES
 -------------------
-1. Loads the trained LightGBM model and the feature list produced by notebook 02.
+1. Loads the FINAL tuned model, the deployed decision threshold, the exact
+   feature list, and the default value of every feature. All four files are
+   small and committed to the repository, so the app runs after a plain clone
+   (including on Streamlit Cloud) with no retraining.
 2. Shows a form with the patient details a nurse could actually know at discharge.
-3. Fills every remaining model feature with the most common value seen in training
-   (so the model always receives a complete, valid row).
-4. Predicts the probability of readmission within 30 days and shows a risk band.
+3. Fills untouched features with the training-data mode (a valid row, never a
+   made-up one).
+4. Predicts the probability of readmission within 30 days, shows the alert
+   decision and a risk band.
 5. Validates every input and refuses to predict on nonsense.
 
 RUN IT
@@ -17,8 +21,8 @@ RUN IT
 IMPORTANT: this is a learning/decision-support demo. It must NOT be used for
 real clinical decisions -- see the disclaimer printed inside the app.
 """
-from pathlib import Path
 import json
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -26,9 +30,10 @@ import streamlit as st
 # --------------------------------------------------------------------- paths
 APP_DIR = Path(__file__).resolve().parent
 PROJECT = APP_DIR.parent
-MODEL_PATH = PROJECT / "models" / "lightgbm.joblib"
+MODEL_PATH = PROJECT / "models" / "final_model.joblib"          # tuned model (notebook 03)
+SUMMARY_PATH = PROJECT / "data" / "processed" / "final_model_summary.json"  # deployed threshold
 FEATURES_PATH = PROJECT / "data" / "processed" / "feature_columns.json"
-TRAIN_PATH = PROJECT / "data" / "processed" / "X_train.csv"
+DEFAULTS_PATH = PROJECT / "data" / "processed" / "feature_defaults.json"    # mode per feature
 
 # --------------------------------------------------------------------- setup
 st.set_page_config(page_title="Hospital Readmission Risk (demo)", page_icon="🏥")
@@ -36,7 +41,8 @@ st.set_page_config(page_title="Hospital Readmission Risk (demo)", page_icon="�
 st.title("🏥 30-Day Readmission Risk — demonstration app")
 st.write(
     "Enter what is known about the patient **at discharge**. The app returns the "
-    "model's estimated probability that this patient is readmitted within 30 days."
+    "model's estimated probability of readmission within 30 days and whether it "
+    "would raise an alert."
 )
 
 # --------------------------------------------------------------------- loading
@@ -46,28 +52,31 @@ def load_model():
     return joblib.load(MODEL_PATH)
 
 @st.cache_data
-def load_features_and_defaults():
-    """Read the feature list and the most common value of every feature.
+def load_config():
+    """Feature list, default value per feature, and the deployed threshold.
 
-    Using the training data's mode as the default means features the user does
-    not touch hold a *typical* value instead of a made-up one.
+    The defaults come from feature_defaults.json -- the most common value of each
+    feature in the training data -- computed once by src/make_feature_defaults.py
+    so the app needs no large data files.
     """
     features = json.loads(FEATURES_PATH.read_text())
-    train = pd.read_csv(TRAIN_PATH, usecols=features)
-    defaults = {c: train[c].mode().iloc[0] for c in features}
-    return features, defaults
+    defaults = json.loads(DEFAULTS_PATH.read_text())
+    summary = json.loads(SUMMARY_PATH.read_text())
+    return features, defaults, float(summary["chosen_threshold"])
 
-missing_files = [str(p) for p in (MODEL_PATH, FEATURES_PATH, TRAIN_PATH) if not p.exists()]
-if missing_files:
+missing = [str(p) for p in (MODEL_PATH, SUMMARY_PATH, FEATURES_PATH, DEFAULTS_PATH)
+           if not p.exists()]
+if missing:
     st.error(
-        "Model files are missing. Run the notebooks first "
-        "(01 then 02), then restart this app.\n\nMissing:\n" + "\n".join(missing_files)
+        "Model files are missing. Run the notebooks in order "
+        "(01, 02, 03), then `python src/make_feature_defaults.py`, and restart "
+        "this app.\n\nMissing:\n" + "\n".join(missing)
     )
     st.stop()
 
 try:
     model = load_model()
-    features, defaults = load_features_and_defaults()
+    features, defaults, THRESHOLD = load_config()
 except Exception as exc:                       # noqa: BLE001
     st.error(f"Could not load the model: {exc}")
     st.stop()
@@ -159,12 +168,14 @@ with st.form("patient_form"):
     submitted = st.form_submit_button("Predict readmission risk", type="primary")
 
 # --------------------------------------------------------------------- build the row
-# The model expects one value for every feature. We start from the training
-# defaults, then overwrite the ones the user actually controls.
 def build_feature_row() -> pd.DataFrame:
+    """Start from the training defaults, then apply what the user entered.
+
+    One-hot columns are overwritten group by group so exactly one category in
+    each group is 1 -- a valid categorical encoding, not arbitrary zeros.
+    """
     row = dict(defaults)
 
-    # direct numeric / engineered inputs
     row.update({
         "age_mid": float(age),
         "time_in_hospital": float(time_in_hospital),
@@ -184,20 +195,10 @@ def build_feature_row() -> pd.DataFrame:
         "insulin": {"No": 0, "Steady": 1, "Up": 2, "Down": 3}[insulin],
     })
 
-    # binary flags: keep all drug columns at their default, set insulin separately
-    for c in features:
-        if c.startswith("race_"):
-            row[c] = 1 if c == f"race_{race}" else 0
-        elif c.startswith("diag_1_grp_"):
-            row[c] = 1 if c == f"diag_1_grp_{diag_1}" else 0
-        elif c.startswith("A1Cresult_"):
-            row[c] = 1 if c == f"A1Cresult_{a1c}" else 0
-        elif c.startswith("max_glu_serum_"):
-            row[c] = 1 if c == f"max_glu_serum_{glu}" else 0
-        elif c.startswith("medical_specialty_"):
-            row[c] = 1 if c == f"medical_specialty_{specialty}" else 0
-
-    # the discharge codes the training data actually saw
+    one_hot_choice = {
+        "race_": race, "diag_1_grp_": diag_1, "A1Cresult_": a1c,
+        "max_glu_serum_": glu, "medical_specialty_": specialty,
+    }
     discharge_codes = {
         "Discharged to home": 1,
         "Discharged/transferred to another short term hospital": 2,
@@ -209,7 +210,11 @@ def build_feature_row() -> pd.DataFrame:
         "Hospice / home": 13,
         "Hospice / medical facility": 14,
     }[discharge]
+
     for c in features:
+        for prefix, choice in one_hot_choice.items():
+            if c.startswith(prefix):
+                row[c] = 1 if c == prefix + choice else 0
         if c.startswith("discharge_disposition_id_"):
             row[c] = 1 if c == f"discharge_disposition_id_{discharge_codes}" else 0
 
@@ -217,9 +222,8 @@ def build_feature_row() -> pd.DataFrame:
 
 # --------------------------------------------------------------------- predict
 if submitted:
-    # --- input validation -----------------------------------------------------
     problems = []
-    if age < 0 or age > 100:
+    if not 0 <= age <= 100:
         problems.append("Age must be between 0 and 100.")
     if time_in_hospital < 1:
         problems.append("Days in hospital must be at least 1.")
@@ -238,23 +242,29 @@ if submitted:
     else:
         X_row = build_feature_row()
         proba = float(model.predict_proba(X_row)[0, 1])
+        alert = proba >= THRESHOLD
 
         st.markdown("---")
         st.subheader("Prediction")
         st.metric("Probability of readmission within 30 days", f"{proba:.1%}")
 
-        if proba < 0.10:
-            band = ("LOW", "green")
-            advice = "Below the dataset average. Standard discharge process."
-        elif proba < 0.25:
-            band = ("MODERATE", "orange")
-            advice = "Around the dataset average. Worth a follow-up call / appointment."
+        if proba < THRESHOLD / 2:
+            band, colour = "LOW", "green"
+            advice = f"Well below the alert threshold ({THRESHOLD:.0%}). Standard discharge process."
+        elif proba < THRESHOLD:
+            band, colour = "MODERATE", "orange"
+            advice = f"Below the alert threshold ({THRESHOLD:.0%}) but above half of it. Worth a follow-up call."
         else:
-            band = ("HIGH", "red")
-            advice = "Well above average. Flag for a follow-up plan before discharge."
+            band, colour = "HIGH", "red"
+            advice = (f"At or above the alert threshold ({THRESHOLD:.0%}) -- the model would "
+                      "raise an alert and request a follow-up plan.")
 
-        st.markdown(f"### Risk band: :{band[1]}[{band[0]}]")
+        st.markdown(f"### Risk band: :{colour}[{band}]")
         st.write(advice)
+        if alert:
+            st.warning("⚠️ This profile crosses the deployed threshold: the model flags it for follow-up.")
+        else:
+            st.success("No alert: below the deployed threshold.")
 
         with st.expander("What the model used (input echo)"):
             st.json({
@@ -264,13 +274,15 @@ if submitted:
                 "primary_diagnosis": diag_1,
                 "HbA1c": a1c, "insulin": insulin,
                 "number_of_diagnoses": number_diagnoses,
+                "deployed_threshold": THRESHOLD,
             })
 
         st.info(
             "**Disclaimer:** this is a student project trained on 1999–2008 insurance "
-            "records. It is a demonstration of the pipeline only and must not inform "
-            "real clinical decisions. Real use requires validation on current local "
-            "data, clinical review, and regulatory approval."
+            "records. On the held-out test set the model catches about 44% of true "
+            "readmissions at 21% precision. It is a demonstration of the pipeline only "
+            "and must not inform real clinical decisions -- real use requires validation "
+            "on current local data, clinical review, and regulatory approval."
         )
 else:
     st.caption("Fill the form and press **Predict readmission risk**.")
